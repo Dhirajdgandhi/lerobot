@@ -71,13 +71,20 @@ hf auth login                               # required to push datasets/policies
 
 Contributors can alternatively use `uv sync --locked --extra feetech` (see `AGENTS.md`).
 
-**4.2 Find USB ports** — run once per arm, unplug when prompted.
+**4.2 Find USB ports & cameras** — run once per arm, unplug when prompted.
 
 ```bash
-lerobot-find-port
+lerobot-find-port                 # one arm at a time; unplug when prompted
+lerobot-find-cameras opencv       # list camera indices so you can map them in --robot.cameras
 ```
 
 macOS: `/dev/tty.usbmodem...`; Linux: `/dev/ttyACM0` (may need `sudo chmod 666 /dev/ttyACM0`).
+
+Quick motor sanity check on a port (returns detected baudrate + motor IDs, or hangs/empty if the chain is unhealthy):
+
+```bash
+python -c "from lerobot.motors.feetech import FeetechMotorsBus; print(FeetechMotorsBus.scan_port('<PORT>'))"
+```
 
 **4.3 Setup motor IDs & baudrate** (one-time, per arm)
 
@@ -127,6 +134,15 @@ lerobot-record \
   --dataset.reset_time_s=10 \
   --display_data=true
 ```
+
+> **Encoding throughput:** on machines that struggle to keep up while recording, encode frames as they arrive instead of at the end — add `--dataset.streaming_encoding=true --dataset.camera_encoder.vcodec=h264 --dataset.encoder_threads=2` (tune threads to your CPU).
+>
+> **Upload failed at the end?** The episodes are still saved locally. Push them by hand:
+>
+> ```bash
+> ls ~/.cache/huggingface/lerobot/${HF_USER}/            # find the dataset folder
+> hf upload ${HF_USER}/<dataset_folder> ~/.cache/huggingface/lerobot/${HF_USER}/<dataset_folder> --repo-type dataset
+> ```
 
 **4.7 Visualize** — **always** do this before training. Look for missing frames, camera blur, unreachable targets, inconsistent object positions.
 After upload: https://huggingface.co/spaces/lerobot/visualize_dataset → paste `${HF_USER}/my_task`. Works for **any LeRobot-formatted Hub dataset** — use it to scout other datasets, inspect episode quality, or debug your own data before retraining.

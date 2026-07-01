@@ -187,17 +187,20 @@ class SOFollower(Robot):
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
 
-        # Capture images from cameras
+        # Capture images from cameras.
+        # Tolerate brief per-frame stalls (e.g. macOS AVFoundation / webcam autofocus
+        # hiccups) that exceed the 500ms default; a genuinely dead read thread still
+        # raises regardless of this value.
         for cam_key, cam in self.cameras.items():
             if getattr(cam, "use_rgb", True):
                 start = time.perf_counter()
-                obs_dict[cam_key] = cam.read_latest()
+                obs_dict[cam_key] = cam.read_latest(max_age_ms=2000)
                 dt_ms = (time.perf_counter() - start) * 1e3
                 logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 
             if getattr(cam, "use_depth", False):
                 start = time.perf_counter()
-                obs_dict[f"{cam_key}_depth"] = cam.read_latest_depth()
+                obs_dict[f"{cam_key}_depth"] = cam.read_latest_depth(max_age_ms=2000)
                 dt_ms = (time.perf_counter() - start) * 1e3
                 logger.debug(f"{self} read {cam_key} depth: {dt_ms:.1f}ms")
 

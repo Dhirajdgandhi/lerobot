@@ -151,6 +151,70 @@ def test_delete_empty_list(sample_dataset, tmp_path):
         )
 
 
+def test_delete_episodes_appends_to_existing_output(
+    sample_dataset, empty_lerobot_dataset_factory, tmp_path
+):
+    """When the output dataset already exists, kept episodes are appended to it."""
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from lerobot.scripts.lerobot_edit_dataset import (
+        DeleteEpisodesConfig,
+        EditDatasetConfig,
+        handle_delete_episodes,
+    )
+
+    features = {
+        "action": {"dtype": "float32", "shape": (6,), "names": None},
+        "observation.state": {"dtype": "float32", "shape": (4,), "names": None},
+        "observation.images.top": {"dtype": "image", "shape": (224, 224, 3), "names": None},
+    }
+    target_root = tmp_path / "existing_target"
+    target = empty_lerobot_dataset_factory(root=target_root, features=features)
+    for _ in range(2):
+        for _ in range(10):
+            target.add_frame(
+                {
+                    "action": np.random.randn(6).astype(np.float32),
+                    "observation.state": np.random.randn(4).astype(np.float32),
+                    "observation.images.top": np.random.randint(
+                        0, 255, size=(224, 224, 3), dtype=np.uint8
+                    ),
+                    "task": "task_0",
+                }
+            )
+        target.save_episode()
+    target.finalize()
+
+    cfg = EditDatasetConfig(
+        operation=DeleteEpisodesConfig(episode_indices=[0]),
+        repo_id=sample_dataset.repo_id,
+        root=str(sample_dataset.root),
+        new_repo_id=target.repo_id,
+        new_root=str(target_root),
+    )
+
+    with (
+        patch("lerobot.datasets.dataset_metadata.get_safe_version") as mock_get_safe_version,
+        patch("lerobot.datasets.dataset_metadata.snapshot_download") as mock_snapshot_download,
+    ):
+        mock_get_safe_version.side_effect = lambda repo_id, version: version
+        mock_snapshot_download.side_effect = lambda *args, **kwargs: kwargs.get(
+            "local_dir", str(target_root)
+        )
+        handle_delete_episodes(cfg)
+
+        result = LeRobotDataset(target.repo_id, root=target_root)
+
+    # 2 pre-existing episodes + (5 source - 1 deleted) kept episodes.
+    assert result.meta.total_episodes == 6
+    assert result.meta.total_frames == 60
+
+    episode_indices = {int(idx.item()) for idx in result.hf_dataset["episode_index"]}
+    assert episode_indices == {0, 1, 2, 3, 4, 5}
+
+    # The previous output is preserved as a backup.
+    assert target_root.with_name(target_root.name + "_old").exists()
+
+
 def test_split_by_episodes(sample_dataset, tmp_path):
     """Test splitting dataset by specific episode indices."""
     splits = {

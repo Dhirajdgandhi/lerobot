@@ -49,6 +49,10 @@ Delete episodes and save to a new dataset at a specific path and with a new repo
         --operation.type delete_episodes \
         --operation.episode_indices "[0, 2, 5]"
 
+If --new_repo_id (resp. --new_root) points to a dataset that already exists, the
+kept episodes are appended to it (the previous contents are backed up to a
+"*_old" directory next to the output).
+
 Split dataset by fractions (pusht_train, pusht_val):
     lerobot-edit-dataset \
         --repo_id lerobot/pusht \
@@ -236,6 +240,7 @@ import abc
 import logging
 import shutil
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -397,6 +402,11 @@ def get_output_path(
     return output_repo_id, output_path
 
 
+def _is_existing_dataset(path: Path) -> bool:
+    """Return True if ``path`` already holds a LeRobot dataset (has meta/info.json)."""
+    return (path / "meta" / "info.json").is_file()
+
+
 def handle_delete_episodes(cfg: EditDatasetConfig) -> None:
     if not isinstance(cfg.operation, DeleteEpisodesConfig):
         raise ValueError("Operation config must be DeleteEpisodesConfig")
@@ -416,13 +426,20 @@ def handle_delete_episodes(cfg: EditDatasetConfig) -> None:
     if output_dir == dataset.root:
         dataset.root = dataset.root.with_name(dataset.root.name + "_old")
 
+    # If the output dataset already exists (and we are not overwriting the source
+    # in-place), append the kept episodes to it instead of failing.
+    append_to_existing = output_dir != dataset.root and _is_existing_dataset(output_dir)
+
     logging.info(f"Deleting episodes {cfg.operation.episode_indices} from {cfg.repo_id}")
-    new_dataset = delete_episodes(
-        dataset,
-        episode_indices=cfg.operation.episode_indices,
-        output_dir=output_dir,
-        repo_id=output_repo_id,
-    )
+    if append_to_existing:
+        new_dataset = _delete_episodes_appending(dataset, output_repo_id, output_dir, cfg.operation)
+    else:
+        new_dataset = delete_episodes(
+            dataset,
+            episode_indices=cfg.operation.episode_indices,
+            output_dir=output_dir,
+            repo_id=output_repo_id,
+        )
 
     logging.info(f"Dataset saved to {output_dir}")
     logging.info(f"Episodes: {new_dataset.meta.total_episodes}, Frames: {new_dataset.meta.total_frames}")
@@ -430,6 +447,55 @@ def handle_delete_episodes(cfg: EditDatasetConfig) -> None:
     if cfg.push_to_hub:
         logging.info(f"Pushing to hub as {output_repo_id}")
         LeRobotDataset(output_repo_id, root=output_dir).push_to_hub()
+
+
+def _delete_episodes_appending(
+    dataset: LeRobotDataset,
+    output_repo_id: str,
+    output_dir: Path,
+    operation: "DeleteEpisodesConfig",
+) -> LeRobotDataset:
+    """Delete episodes and append the kept ones to the existing dataset at ``output_dir``.
+
+    The existing output dataset and the filtered episodes are merged into a fresh
+    dataset, which then replaces ``output_dir``. The previous contents of
+    ``output_dir`` are moved to a ``*_old`` backup directory.
+    """
+    logging.info(
+        f"Output dataset '{output_repo_id}' already exists at {output_dir}. "
+        "Appending the kept episodes to it."
+    )
+
+    # Work in a temporary directory on the same filesystem as the output so the
+    # final swap is a cheap rename.
+    with tempfile.TemporaryDirectory(dir=output_dir.parent, prefix=".edit-append-") as tmp:
+        tmp_path = Path(tmp)
+        filtered_dir = tmp_path / "filtered"
+        merged_dir = tmp_path / "merged"
+
+        filtered_dataset = delete_episodes(
+            dataset,
+            episode_indices=operation.episode_indices,
+            output_dir=filtered_dir,
+            repo_id=output_repo_id,
+        )
+
+        existing_dataset = LeRobotDataset(output_repo_id, root=output_dir)
+
+        merge_datasets(
+            [existing_dataset, filtered_dataset],
+            output_repo_id=output_repo_id,
+            output_dir=merged_dir,
+        )
+
+        # Swap the merged result in for the existing output, keeping a backup.
+        backup_path = output_dir.with_name(output_dir.name + "_old")
+        if backup_path.exists():
+            shutil.rmtree(backup_path)
+        shutil.move(str(output_dir), str(backup_path))
+        shutil.move(str(merged_dir), str(output_dir))
+
+    return LeRobotDataset(output_repo_id, root=output_dir)
 
 
 def handle_split(cfg: EditDatasetConfig) -> None:
